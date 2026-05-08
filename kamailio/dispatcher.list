@@ -1,0 +1,13 @@
+# Kamailio dispatcher.list — load-balanced Asterisk nodes
+# Format: setid  destination  [flags]  [priority]  [attrs]
+#
+# setid=1 : Asterisk B2BUA nodes
+# This file is used when dispatcher loads from file (db_url="" in cfg).
+# Our setup uses DB-based dispatcher (db_url = DBURL) — this file
+# is kept for reference and fallback.
+#
+# To use file-based instead of DB-based, set:
+#   modparam("dispatcher", "list_file", "/etc/kamailio/dispatcher.list")
+#   modparam("dispatcher", "db_url",    "")
+
+1  sip:127.0.0.1:5080  0  1  duid=asterisk-primary

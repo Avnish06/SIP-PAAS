@@ -1,0 +1,23 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: sipaas-api
+    static_configs:
+      - targets: ['localhost:3000']
+
+  - job_name: kamailio
+    static_configs:
+      - targets: ['localhost:9090']   # kamailio prometheus exporter if configured
+
+  - job_name: mysql
+    static_configs:
+      - targets: ['localhost:9104']   # mysqld_exporter
+
+  - job_name: redis
+    static_configs:
+      - targets: ['localhost:9121']   # redis_exporter
+
+  - job_name: node
+    static_configs:
+      - targets: ['localhost:9100']   # node_exporter

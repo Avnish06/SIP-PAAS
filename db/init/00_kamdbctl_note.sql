@@ -1,0 +1,30 @@
+-- ─────────────────────────────────────────────────────────────
+--  IMPORTANT: Standard Kamailio Schema
+--
+--  The guide (Section 5.1) says to run:
+--    kamdbctl create
+--  which generates ~35 standard Kamailio tables.
+--
+--  Our 01_kamailio_schema.sql only defines the tables we
+--  directly use. To get the FULL standard schema, run this
+--  AFTER the containers start:
+--
+--    docker exec kamailio kamdbctl create
+--
+--  Or apply the official full schema:
+--    https://github.com/kamailio/kamailio/tree/master/utils/kamctl/mysql
+--
+--  The tables defined in 01_kamailio_schema.sql are:
+--    subscriber, location, address, dispatcher,
+--    dialog, dialog_vars, acc, missed_calls, uacreg,
+--    dr_gateways, dr_rules
+--
+--  Standard Kamailio tables NOT in our schema (kamdbctl creates these):
+--    aliases, grp, re_grp, speed_dial, dbaliases,
+--    active_watchers, presentity, rls_watchers, rls_xcap,
+--    xcap, pua, watchers, silo, rtpproxy, topos_d, topos_t,
+--    carrierfailureroute, carrierroute, domain, domain_attrs,
+--    lcr_gw, lcr_rule, lcr_rule_target, mohqueues,
+--    mtree, mtrees, pl_pipes, secfilter
+-- ─────────────────────────────────────────────────────────────
+USE kamailio;

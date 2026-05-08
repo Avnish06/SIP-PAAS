@@ -1,0 +1,236 @@
+# ─────────────────────────────────────────────────────────
+#  SIP-as-a-Service Stack
+#  Kamailio (edge/proxy) → RTPEngine (media) → Asterisk (B2BUA)
+#  → Upstream providers (TATA IP-based + others reg-based)
+#  + MySQL, Redis, REST API, Customer Portal, Billing Engine
+# ─────────────────────────────────────────────────────────
+
+services:
+
+  # ── SIP Edge / Proxy / Registrar ─────────────────────────
+  kamailio:
+    profiles: [sip]           # only starts with: docker compose --profile sip up -d
+    build: ./kamailio
+    container_name: kamailio
+    restart: unless-stopped
+    network_mode: host        # SIP/RTP requires host networking
+    environment:
+      - KAMAILIO_DOMAIN=${DOMAIN}
+      - DB_HOST=127.0.0.1
+      - DB_PORT=3306
+      - DB_USER=${DB_USER}
+      - DB_PASS=${DB_PASS}
+      - DB_NAME=kamailio
+      - REDIS_HOST=127.0.0.1
+      - REDIS_PORT=6379
+      - ASTERISK_IP=127.0.0.1
+      - ASTERISK_PORT=5080
+      - RTPENGINE_IP=127.0.0.1
+      - RTPENGINE_PORT=22222
+      - TATA_IP=${TATA_IP}
+      - TATA_PORT=${TATA_PORT:-5060}
+    volumes:
+      - ./kamailio/cfg:/etc/kamailio:ro
+      - ./kamailio/tls:/etc/kamailio/tls:ro
+      - kamailio-logs:/var/log/kamailio
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    cap_add:
+      - NET_ADMIN
+      - SYS_NICE
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+  # ── RTP Media Proxy ───────────────────────────────────────
+  rtpengine:
+    profiles: [sip]           # only starts with: docker compose --profile sip up -d
+    build: ./rtpengine
+    container_name: rtpengine
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - RTP_MIN_PORT=${RTP_MIN_PORT:-10000}
+      - RTP_MAX_PORT=${RTP_MAX_PORT:-20000}
+      - PUBLIC_IP=${PUBLIC_IP}
+    volumes:
+      - ./rtpengine/rtpengine.conf:/etc/rtpengine/rtpengine.conf:ro
+
+  # ── Asterisk B2BUA / Media Server ────────────────────────
+  asterisk:
+    profiles: [sip]           # only starts with: docker compose --profile sip up -d
+    build: ./asterisk
+    container_name: asterisk
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - KAMAILIO_IP=127.0.0.1
+      - DB_HOST=127.0.0.1
+      - DB_USER=${DB_USER}
+      - DB_PASS=${DB_PASS}
+      - DB_NAME=kamailio
+      - TATA_IP=${TATA_IP}
+      - TATA_PORT=${TATA_PORT:-5060}
+      - AMI_USER=${AMI_USER:-amiuser}
+      - AMI_PASS=${AMI_PASS}
+      - ARI_USER=${ARI_USER:-ariuser}
+      - ARI_PASS=${ARI_PASS}
+    volumes:
+      - ./asterisk/conf:/etc/asterisk:ro
+      - asterisk-spool:/var/spool/asterisk
+      - asterisk-logs:/var/log/asterisk
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  # ── MySQL: Kamailio + Platform DB ─────────────────────────
+  mysql:
+    image: mysql:8.0
+    container_name: sipaas-db
+    restart: unless-stopped
+    environment:
+      - MYSQL_ROOT_PASSWORD=${DB_ROOT_PASS}
+      - MYSQL_DATABASE=kamailio
+      - MYSQL_USER=${DB_USER}
+      - MYSQL_PASSWORD=${DB_PASS}
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - '127.0.0.1:3307:3306'
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_ROOT_PASS}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --max-connections=500
+
+  # ── Redis: Real-time balance cache + channel count ────────
+  redis:
+    image: redis:7-alpine
+    container_name: sipaas-redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASS} --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - '127.0.0.1:6379:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASS}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── REST API ──────────────────────────────────────────────
+  api:
+    build: ./api
+    container_name: sipaas-api
+    restart: unless-stopped
+    ports:
+      - '${API_PORT:-3000}:3000'
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_USER=${DB_USER}
+      - DB_PASS=${DB_PASS}
+      - DB_NAME=kamailio
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASS=${REDIS_PASS}
+      - JWT_SECRET=${JWT_SECRET}
+      - KAMAILIO_RPC_URL=http://host.docker.internal:5060/RPC
+      - ASTERISK_AMI_HOST=host.docker.internal
+      - ASTERISK_AMI_PORT=5038
+      - ASTERISK_AMI_USER=${AMI_USER:-amiuser}
+      - ASTERISK_AMI_PASS=${AMI_PASS}
+      - ASTERISK_ARI_URL=http://host.docker.internal:8088
+      - ASTERISK_ARI_USER=${ARI_USER:-ariuser}
+      - ASTERISK_ARI_PASS=${ARI_PASS}
+      - DOMAIN=${DOMAIN}
+      - RATE_PER_MIN=${RATE_PER_MIN:-0.45}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── Customer Portal ───────────────────────────────────────
+  portal:
+    build: ./portal
+    container_name: sipaas-portal
+    restart: unless-stopped
+    ports:
+      - '${PORTAL_PORT:-8080}:8080'
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=http://${PUBLIC_IP}:${API_PORT:-3000}
+      - PORT=8080
+    depends_on:
+      - api
+
+  # ── Billing Engine ────────────────────────────────────────
+  billing:
+    build: ./billing
+    container_name: sipaas-billing
+    restart: unless-stopped
+    environment:
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_USER=${DB_USER}
+      - DB_PASS=${DB_PASS}
+      - DB_NAME=kamailio
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASS=${REDIS_PASS}
+      - RATE_PER_MIN=${RATE_PER_MIN:-0.45}
+      - DID_MONTHLY_RATE=${DID_MONTHLY_RATE:-500}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── Monitoring: Prometheus ────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: sipaas-prometheus
+    restart: unless-stopped
+    ports:
+      - '9090:9090'
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+
+  # ── Monitoring: Grafana ───────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    container_name: sipaas-grafana
+    restart: unless-stopped
+    ports:
+      - '3001:3000'
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASS:-admin123}
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+
+volumes:
+  mysql-data:
+  redis-data:
+  kamailio-logs:
+  asterisk-spool:
+  asterisk-logs:
+  prometheus-data:
+  grafana-data:

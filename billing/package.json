@@ -1,0 +1,7 @@
+{
+  "name": "sipaas-billing",
+  "version": "1.0.0",
+  "main": "src/index.js",
+  "scripts": { "start": "node src/index.js" },
+  "dependencies": { "mysql2": "^3.6.5", "redis": "^4.6.11" }
+}
