@@ -40,6 +40,15 @@ function BrowserPhone() {
   const MAX_WS_RETRIES = 3
   const toneRef        = useRef(null)
   const [toneOn, setToneOn] = useState(false)
+  const [customerId, setCustomerId] = useState(null)
+
+  // Fetch the logged-in customer's id once on mount. We send this as the
+  // X-Customer-ID header on every outbound INVITE so the dialplan can stamp
+  // CDR(accountcode), which is what the billing engine uses to attribute the
+  // call back to the right customer.
+  useEffect(() => {
+    api.get('/accounts/me').then(r => setCustomerId(r.data?.account?.id ?? null)).catch(() => {})
+  }, [])
 
   // Asterisk WebRTC SIP — proxied through API port 3000 → Asterisk :8088
   const SIP_USER   = 'webrtcuser'
@@ -48,6 +57,7 @@ function BrowserPhone() {
   // works on localhost dev and on the public IP without hardcoding.
   const SIP_DOMAIN = typeof window !== 'undefined' ? window.location.hostname : '152.58.97.143'
 
+  // JsSIP script loader — runs ONCE on mount only.
   useEffect(() => {
     if (scriptLoaded.current) return
     scriptLoaded.current = true
@@ -58,6 +68,45 @@ function BrowserPhone() {
     document.head.appendChild(s)
     return () => { if (timerRef.current) clearInterval(timerRef.current) }
   }, [])
+
+  // External-trigger bridge: re-registers the window event handler on every
+  // render so its closure ALWAYS has the latest regState / connect / makeCall /
+  // setDialNum. A single mount-time handler would freeze regState at 'idle'
+  // and the wait-for-registration loop would never see it become 'registered'.
+  useEffect(() => {
+    const onExternalCall = async (ev) => {
+      const dest = (ev.detail && ev.detail.dest || '').replace(/\s/g,'')
+      if (!dest) return
+      // Trigger connect once if needed; subsequent renders will see updated regState.
+      if (regState === 'idle') connect()
+      // Wait up to 10s for the BrowserPhone to reach 'registered'. We re-check
+      // via a window.getComputedStyle-like polling: each tick we check the latest
+      // regState captured in a fresh effect re-binding (see useEffect deps).
+      const deadline = Date.now() + 10000
+      while (Date.now() < deadline) {
+        // The handler is re-bound on each regState change — re-reading the
+        // outer-scope variable here would still be stale, so we read it from
+        // an attribute we keep up-to-date on the window object below.
+        if (window.__sipaasRegState === 'registered') break
+        await new Promise(r => setTimeout(r, 200))
+      }
+      if (window.__sipaasRegState !== 'registered') {
+        console.warn('[SIP] external call: not registered after 10s, aborting')
+        return
+      }
+      // Pass dest directly — avoids the stale-closure where makeCall reads
+      // an old (empty) dialNum because setDialNum's state commit hasn't run.
+      makeCall(dest)
+    }
+    window.addEventListener('sipaas:call', onExternalCall)
+    return () => window.removeEventListener('sipaas:call', onExternalCall)
+  }, [regState, connect, makeCall, setDialNum])
+
+  // Mirror regState onto window so the external-call handler can poll
+  // a value that updates in real time, not a stale closure.
+  useEffect(() => {
+    if (typeof window !== 'undefined') window.__sipaasRegState = regState
+  }, [regState])
 
   function fmtTime(s) {
     return `${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`
@@ -225,9 +274,16 @@ function BrowserPhone() {
     setRegState('idle'); setCallState('idle'); setStatusMsg(''); setDuration(0)
   }
 
-  function makeCall() {
-    if (!uaRef.current || regState !== 'registered' || !dialNum.trim()) return
-    const dest = dialNum.replace(/\s/g,'')
+  // makeCall accepts an OPTIONAL destination. When invoked from the on-screen
+  // form, the state-bound dialNum supplies it. When invoked from an external
+  // window event (the Make-a-Call panel above), the caller passes the dest
+  // directly so we sidestep the stale-closure on dialNum.
+  function makeCall(destOverride) {
+    if (!uaRef.current || regState !== 'registered') return
+    const raw = (typeof destOverride === 'string' && destOverride) ? destOverride : dialNum
+    if (!raw || !raw.trim()) return
+    const dest = raw.replace(/\s/g,'')
+    setDialNum(dest)
     setCallState('calling')
     setStatusMsg('')
 
@@ -273,6 +329,10 @@ function BrowserPhone() {
     } else {
       // Fallback: let JsSIP call getUserMedia (may fail silently on some browsers)
       callOptions.mediaConstraints = { audio: true, video: false }
+    }
+    // Stamp the call with the customer id so the dialplan can attribute CDR.
+    if (customerId) {
+      callOptions.extraHeaders = [`X-Customer-ID: ${customerId}`]
     }
     uaRef.current.call(`sip:${dest}@${SIP_DOMAIN}`, callOptions)
   }
@@ -569,20 +629,21 @@ export default function Calls() {
     URL.revokeObjectURL(url)
   }
 
-  // Click-to-Call
+  // Make a Call — dispatch a window event consumed by BrowserPhone, which
+  // owns the SIP user-agent state. This keeps the two components decoupled.
   const makeC2cCall = async e => {
     e.preventDefault()
     setC2cResult(null); setC2cError(''); setC2cCalling(true)
     try {
-      const { data } = await api.post('/calls/bridge', {
-        my_number: c2cForm.my_number,
-        to:        c2cForm.to,
-      })
-      setC2cResult(data)
+      const dest = c2cForm.to.replace(/\s/g,'')
+      if (!dest) throw new Error('Destination number required')
+      window.dispatchEvent(new CustomEvent('sipaas:call', { detail: { dest } }))
+      setC2cResult({ message: `Calling ${dest} via SIP — audio in this browser (allow mic if prompted)` })
     } catch (err) {
-      const e = err.response?.data?.error
-      setC2cError(typeof e === 'object' ? (e.message || JSON.stringify(e)) : e || 'Call failed')
-    } finally { setC2cCalling(false) }
+      setC2cError(err.message || 'Call failed')
+    } finally {
+      setC2cCalling(false)
+    }
   }
 
   const totalPages = Math.max(1, Math.ceil((total.cnt || 0) / LIMIT))
@@ -590,32 +651,22 @@ export default function Calls() {
   return (
     <div className="max-w-7xl">
 
-      {/* ── Click-to-Call ── */}
+      {/* ── Make a Call (SIP, no cellular) ── */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-6">
         <h2 className="text-xl font-bold text-white mb-1 flex items-center gap-2">
           📞 Make a Call
-          <span className="text-xs font-normal text-gray-500 ml-1">Click-to-Call</span>
+          <span className="text-xs font-normal text-gray-500 ml-1">SIP via browser</span>
         </h2>
         <p className="text-gray-400 text-sm mb-5">
-          System calls <strong className="text-white">your phone</strong> first — pick up, then you're connected to the destination.
+          Dials the destination directly over SIP. <strong className="text-white">Audio plays in this browser</strong> — your mobile phone is not involved.
         </p>
 
-        <form onSubmit={makeC2cCall} className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div>
-            <label className="text-xs text-gray-400 block mb-1.5">Your Phone Number</label>
-            <input
-              className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white font-mono text-sm focus:outline-none focus:border-blue-500"
-              placeholder="9876543210 (your mobile)"
-              value={c2cForm.my_number}
-              onChange={e => setC2cForm({...c2cForm, my_number: e.target.value})}
-              required
-            />
-          </div>
+        <form onSubmit={makeC2cCall} className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label className="text-xs text-gray-400 block mb-1.5">Destination Number</label>
             <input
               className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white font-mono text-sm focus:outline-none focus:border-blue-500"
-              placeholder="9142436879 (who to call)"
+              placeholder="9142436879"
               value={c2cForm.to}
               onChange={e => setC2cForm({...c2cForm, to: e.target.value})}
               required
@@ -624,7 +675,7 @@ export default function Calls() {
           <div className="flex items-end">
             <button type="submit" disabled={c2cCalling}
               className="w-full bg-green-600 hover:bg-green-500 disabled:opacity-50 text-white px-6 py-3 rounded-lg font-bold text-sm transition flex items-center justify-center gap-2">
-              {c2cCalling ? '⏳ Calling your phone...' : '📞 Call Now'}
+              {c2cCalling ? '⏳ Connecting...' : '📞 Call Now'}
             </button>
           </div>
         </form>
@@ -634,7 +685,7 @@ export default function Calls() {
             <span className="text-green-400 mt-0.5">✓</span>
             <div>
               <p className="text-green-400 text-sm font-medium">{c2cResult.message}</p>
-              <p className="text-green-500 text-xs mt-0.5">Pick up when your phone rings — you'll be bridged to {c2cResult.dest_dnis}</p>
+              <p className="text-green-500 text-xs mt-0.5">Watch the Browser Phone panel below for call status.</p>
             </div>
           </div>
         )}

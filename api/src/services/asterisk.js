@@ -120,17 +120,23 @@ async function bridgeCall({ myNumber, toNumber, customerId }) {
   const myDnis   = prefix + toTenDigit(myNumber);   // e.g. 09876543210
   const destDnis = prefix + toTenDigit(toNumber);   // e.g. 09142436879
 
-  // AMI Originate: call myNumber, when answered → Dial destNumber
+  // Route through the [click-to-call] dialplan context (extensions.conf)
+  // instead of running Dial directly via Application/Data. The dialplan
+  // sets CDR(accountcode)=${CUSTOMER_ID} from the variable below — that's
+  // the only fully reliable way to attribute CDRs to a customer on AMI
+  // Originate. Account: <id> alone does not propagate to the CDR row.
   const actionId = uuid();
   const cmd = [
     `Action: Originate`,
     `ActionID: ${actionId}`,
     `Channel: PJSIP/${myDnis}@${trunk_ep}`,
-    `Application: Dial`,
-    `Data: PJSIP/${destDnis}@${trunk_ep}`,
+    `Context: click-to-call`,
+    `Exten: ${destDnis}`,
+    `Priority: 1`,
     `CallerID: ${callerId}`,
     `Timeout: 30000`,
     `Async: yes`,
+    `Account: ${customerId}`,
     `Variable: CUSTOMER_ID=${customerId}`,
     ``,
   ].join('\r\n');
