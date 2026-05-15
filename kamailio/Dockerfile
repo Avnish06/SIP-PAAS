@@ -11,11 +11,10 @@ RUN apt-get update && apt-get install -y gnupg2 curl ca-certificates && \
       kamailio-tls-modules \
       kamailio-websocket-modules \
       kamailio-presence-modules \
-      kamailio-rtpengine-modules \
       kamailio-json-modules \
-      kamailio-utils \
       kamailio-redis-modules \
       kamailio-extra-modules \
+      netbase \
     && rm -rf /var/lib/apt/lists/*
 
 COPY cfg/ /etc/kamailio/

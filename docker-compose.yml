@@ -27,11 +27,10 @@ services:
       - ASTERISK_PORT=5080
       - RTPENGINE_IP=127.0.0.1
       - RTPENGINE_PORT=22222
-      - TATA_IP=${TATA_IP}
-      - TATA_PORT=${TATA_PORT:-5060}
+      - SYNCHROVOX_IP=${SYNCHROVOX_IP:-20.193.182.13}
+      - SYNCHROVOX_PORT=${SYNCHROVOX_PORT:-5060}
     volumes:
       - ./kamailio/cfg:/etc/kamailio:ro
-      - ./kamailio/tls:/etc/kamailio/tls:ro
       - kamailio-logs:/var/log/kamailio
     depends_on:
       mysql:
@@ -48,19 +47,25 @@ services:
 
   # ── RTP Media Proxy ───────────────────────────────────────
   rtpengine:
-    profiles: [sip]           # only starts with: docker compose --profile sip up -d
-    build: ./rtpengine
+    profiles: [sip]
+    image: drachtio/rtpengine
     container_name: rtpengine
     restart: unless-stopped
     network_mode: host
     cap_add:
       - NET_ADMIN
-    environment:
-      - RTP_MIN_PORT=${RTP_MIN_PORT:-10000}
-      - RTP_MAX_PORT=${RTP_MAX_PORT:-20000}
-      - PUBLIC_IP=${PUBLIC_IP}
-    volumes:
-      - ./rtpengine/rtpengine.conf:/etc/rtpengine/rtpengine.conf:ro
+    entrypoint: ["rtpengine"]
+    command: >
+      --listen-ng=127.0.0.1:22222
+      --interface=${PUBLIC_IP}
+      --port-min=${RTP_MIN_PORT:-10000}
+      --port-max=${RTP_MAX_PORT:-20000}
+      --log-level=5
+      --foreground
+      --log-stderr
+      --timeout=60
+      --silent-timeout=3600
+      --no-fallback
 
   # ── Asterisk B2BUA / Media Server ────────────────────────
   asterisk:
@@ -68,15 +73,31 @@ services:
     build: ./asterisk
     container_name: asterisk
     restart: unless-stopped
-    network_mode: host
+    # Bridge networking + explicit port mapping so Docker Desktop properly
+    # forwards UDP from Windows host → WSL2 → this container.
+    # (network_mode:host does NOT auto-forward UDP on Docker Desktop/Windows)
+    ports:
+      - "5080:5080/udp"
+      - "5080:5080/tcp"
+      - "8088:8088/tcp"
+      - "5038:5038/tcp"
+      # Asterisk RTP — kept disjoint from RTPEngine (10000-15000 on host net).
+      # Must match asterisk/conf/rtp.conf rtpstart/rtpend.
+      - "16000-16100:16000-16100/udp"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
-      - KAMAILIO_IP=127.0.0.1
-      - DB_HOST=127.0.0.1
+      # Kamailio runs with host-network → reachable from bridge at 172.18.0.1
+      - KAMAILIO_IP=172.18.0.1
+      - DB_HOST=mysql
+      - DB_PORT=3306
       - DB_USER=${DB_USER}
       - DB_PASS=${DB_PASS}
       - DB_NAME=kamailio
-      - TATA_IP=${TATA_IP}
-      - TATA_PORT=${TATA_PORT:-5060}
+      - SYNCHROVOX_IP=${SYNCHROVOX_IP:-20.193.182.13}
+      - SYNCHROVOX_PORT=${SYNCHROVOX_PORT:-5060}
+      - SYNCHROVOX_PREFIX=${SYNCHROVOX_PREFIX:-0}
+      - SYNCHROVOX_CALLER_ID=${SYNCHROVOX_CALLER_ID:-00919240292847}
       - AMI_USER=${AMI_USER:-amiuser}
       - AMI_PASS=${AMI_PASS}
       - ARI_USER=${ARI_USER:-ariuser}
@@ -155,11 +176,17 @@ services:
       - ASTERISK_AMI_PORT=5038
       - ASTERISK_AMI_USER=${AMI_USER:-amiuser}
       - ASTERISK_AMI_PASS=${AMI_PASS}
-      - ASTERISK_ARI_URL=http://host.docker.internal:8088
+      - ASTERISK_ARI_URL=http://asterisk:8088
       - ASTERISK_ARI_USER=${ARI_USER:-ariuser}
       - ASTERISK_ARI_PASS=${ARI_PASS}
       - DOMAIN=${DOMAIN}
       - RATE_PER_MIN=${RATE_PER_MIN:-0.45}
+      - SYNCHROVOX_IP=${SYNCHROVOX_IP:-20.193.182.13}
+      - SYNCHROVOX_PORT=${SYNCHROVOX_PORT:-5060}
+      - SYNCHROVOX_PREFIX=${SYNCHROVOX_PREFIX:-0}
+      - SYNCHROVOX_CALLER_ID=${SYNCHROVOX_CALLER_ID:-00919240292847}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       mysql:
         condition: service_healthy
@@ -175,7 +202,7 @@ services:
       - '${PORTAL_PORT:-8080}:8080'
     environment:
       - NODE_ENV=production
-      - NEXT_PUBLIC_API_URL=http://${PUBLIC_IP}:${API_PORT:-3000}
+      - NEXT_PUBLIC_API_URL=http://localhost:${API_PORT:-3000}
       - PORT=8080
     depends_on:
       - api
@@ -196,6 +223,10 @@ services:
       - REDIS_PASS=${REDIS_PASS}
       - RATE_PER_MIN=${RATE_PER_MIN:-0.45}
       - DID_MONTHLY_RATE=${DID_MONTHLY_RATE:-500}
+      - ASTERISK_AMI_HOST=asterisk
+      - ASTERISK_AMI_PORT=5038
+      - ASTERISK_AMI_USER=${AMI_USER:-amiuser}
+      - ASTERISK_AMI_PASS=${AMI_PASS}
     depends_on:
       mysql:
         condition: service_healthy

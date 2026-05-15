@@ -2,7 +2,7 @@ const router = require('express').Router();
 const { db }    = require('../config/db');
 const { redis } = require('../config/redis');
 const { requireAuth } = require('../middleware/auth');
-const { originateCall } = require('../services/asterisk');
+const { originateCall, bridgeCall } = require('../services/asterisk');
 const { kamailioRpc }  = require('../services/kamailio');
 
 /* GET /v1/calls/active — live channel count per trunk */
@@ -16,26 +16,34 @@ router.get('/active', requireAuth, async (req, res, next) => {
 /* GET /v1/calls/cdr — call history */
 router.get('/cdr', requireAuth, async (req, res, next) => {
   try {
-    const page    = parseInt(req.query.page  || '1');
-    const limit   = parseInt(req.query.limit || '50');
-    const offset  = (page - 1) * limit;
-    const { from, to } = req.query;
+    const page      = Math.max(1, parseInt(req.query.page  || '1'));
+    const limit     = Math.min(100, Math.max(1, parseInt(req.query.limit || '25')));
+    const offset    = (page - 1) * limit;
+    const { from, to, status, direction } = req.query;
 
-    let sql = `SELECT id, src, dst, start_time, answer_time, end_time, duration, billsec,
-                      disposition, cost, rate, direction, provider
-               FROM cdr WHERE customer_id = ?`;
-    const params = [req.customer.id];
+    // Build WHERE clauses — same filters apply to both data query and count query
+    const whereClauses = ['customer_id = ?'];
+    const whereParams  = [req.customer.id];
 
-    if (from) { sql += ' AND start_time >= ?'; params.push(from); }
-    if (to)   { sql += ' AND start_time <= ?'; params.push(to);   }
-    sql += ' ORDER BY start_time DESC LIMIT ? OFFSET ?';
-    params.push(limit, offset);
+    if (from)      { whereClauses.push('start_time >= ?');   whereParams.push(from); }
+    if (to)        { whereClauses.push('start_time <= ?');   whereParams.push(to + ' 23:59:59'); }
+    if (status && status !== 'all')    { whereClauses.push('disposition = ?');  whereParams.push(status); }
+    if (direction && direction !== 'all') { whereClauses.push('direction = ?'); whereParams.push(direction); }
 
-    const [rows] = await db().query(sql, params);
+    const where = whereClauses.join(' AND ');
+
+    const [rows] = await db().query(
+      `SELECT id, src, dst, start_time, answer_time, end_time, duration, billsec,
+              disposition, cost, rate, direction, provider
+       FROM cdr WHERE ${where}
+       ORDER BY start_time DESC LIMIT ? OFFSET ?`,
+      [...whereParams, limit, offset]
+    );
 
     const [total] = await db().query(
-      'SELECT COUNT(*) AS cnt, SUM(billsec) AS total_secs, SUM(cost) AS total_cost FROM cdr WHERE customer_id = ?',
-      [req.customer.id]
+      `SELECT COUNT(*) AS cnt, SUM(billsec) AS total_secs, SUM(cost) AS total_cost
+       FROM cdr WHERE ${where}`,
+      whereParams
     );
     res.json({ cdrs: rows, total: total[0], page, limit });
   } catch (err) { next(err); }
@@ -86,6 +94,35 @@ router.post('/originate', requireAuth, async (req, res, next) => {
 
     res.json({ call_id: callId, status: 'originating', from: fromUri, to: toUri });
   } catch (err) { next(err); }
+});
+
+/*
+ * POST /v1/calls/bridge
+ * Click-to-call: system calls YOUR number first, then bridges to destination.
+ * Body: { my_number: "9876543210", to: "9142436879" }
+ */
+router.post('/bridge', requireAuth, async (req, res, next) => {
+  try {
+    const { my_number, to } = req.body;
+    if (!my_number || !to) return res.status(400).json({ error: 'my_number and to are required' });
+    if (parseFloat(req.customer.balance) <= 0) return res.status(402).json({ error: 'Insufficient balance' });
+
+    const result = await bridgeCall({
+      myNumber:   my_number,
+      toNumber:   to,
+      customerId: req.customer.id,
+    });
+
+    res.json({
+      status:    'calling_you',
+      message:   `Your phone (${result.my_dnis}) will ring — pick up to be connected to ${result.dest_dnis}`,
+      my_dnis:   result.my_dnis,
+      dest_dnis: result.dest_dnis,
+    });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    next(err);
+  }
 });
 
 module.exports = router;

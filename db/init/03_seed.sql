@@ -8,56 +8,49 @@ USE kamailio;
 INSERT IGNORE INTO `dispatcher` (`setid`, `destination`, `flags`, `priority`, `description`)
 VALUES (1, 'sip:127.0.0.1:5080', 0, 1, 'Asterisk-primary');
 
--- ── Upstream providers (grp=2 in address for IP-based) ───────
--- TATA Tele: IP-based (add TATA's IP here for permissions)
+-- ── Upstream provider IP whitelisted in Kamailio (grp=2) ─────
+-- Kamailio allows inbound SIP from Synchrovox without customer auth
 INSERT IGNORE INTO `address` (`grp`, `ip_addr`, `mask`, `port`, `tag`)
-VALUES (2, '203.x.x.x', 32, 5060, 'tata-upstream');
+VALUES (2, '20.193.182.13', 32, 5060, 'synchrovox-upstream');
 
 -- ── Providers table ──────────────────────────────────────────
-INSERT IGNORE INTO `providers` (`name`, `type`, `host`, `port`, `caller_id`, `priority`)
-VALUES ('tata', 'ip', '203.x.x.x', 5060, '+911234567890', 1);
-
 INSERT IGNORE INTO `providers` (`name`, `type`, `host`, `port`, `username`, `password`, `caller_id`, `priority`)
-VALUES ('provider2', 'registration', 'sip.provider2.com', 5060, 'your_username', 'your_password', 'your_ddi_number', 2);
+VALUES (
+  'synchrovox',
+  'registration',
+  '20.193.182.13',
+  5060,
+  'synchrovoxai_new.com',
+  '1kdu9sr0a3w',
+  '00919240292847',
+  1
+);
 
--- ── Dynamic routing: India (+91) → TATA (gwid=1) ─────────────
+-- ── Dynamic routing: all calls → Synchrovox (gwid=1) ─────────
 INSERT IGNORE INTO `dr_gateways` (`type`, `address`, `attrs`, `description`)
-VALUES (0, 'sip:203.x.x.x:5060', 'tata', 'TATA-primary');
+VALUES (0, 'sip:20.193.182.13:5060', 'synchrovox', 'Synchrovox-primary');
 
 INSERT IGNORE INTO `dr_rules` (`groupid`, `prefix`, `priority`, `gwlist`, `description`)
-VALUES ('1', '+91', 10, '1', 'India via TATA');
+VALUES ('1', '+91', 10, '1', 'India via Synchrovox');
 
 INSERT IGNORE INTO `dr_rules` (`groupid`, `prefix`, `priority`, `gwlist`, `description`)
-VALUES ('1', '+', 5, '1', 'International fallback');
+VALUES ('1', '+', 5, '1', 'International via Synchrovox');
 
 -- ── Default Rate Cards ────────────────────────────────────────
 INSERT IGNORE INTO `rate_cards` (`customer_id`, `prefix`, `description`, `rate_per_min`, `billing_increment`)
 VALUES
-  (NULL, '+91', 'India Mobile',      0.45, 60),
-  (NULL, '+911',  'India Landline',    0.45, 60),
-  (NULL, '+1',  'USA/Canada',         1.50, 60),
-  (NULL, '+44', 'UK',                 1.80, 60),
-  (NULL, '+',   'International',      3.00, 60);
+  (NULL, '+91',  'India Mobile',   0.45, 60),
+  (NULL, '+911', 'India Landline', 0.45, 60),
+  (NULL, '+1',   'USA/Canada',     1.50, 60),
+  (NULL, '+44',  'UK',             1.80, 60),
+  (NULL, '+',    'International',  3.00, 60);
 
 -- ── Sample DID Inventory ──────────────────────────────────────
--- Add your actual DIDs here
 INSERT IGNORE INTO `did_inventory` (`number`, `country`, `region`, `type`, `monthly_rate`, `provider`, `status`)
 VALUES
-  ('+919001234567', 'IN', 'Delhi',     'mobile', 500.00, 'tata', 'available'),
-  ('+919001234568', 'IN', 'Mumbai',    'mobile', 500.00, 'tata', 'available'),
-  ('+919001234569', 'IN', 'Bangalore', 'mobile', 500.00, 'tata', 'available'),
-  ('+918001234570', 'IN', 'National',  '1800',   1000.00, 'tata', 'available');
+  ('+919240292847', 'IN', 'Gujarat', 'mobile', 500.00, 'synchrovox', 'available');
 
--- ── UAC Registration for Provider2 ───────────────────────────
--- Kamailio registers to Provider2 on behalf of the platform
-INSERT IGNORE INTO `uacreg` (
-  `l_uuid`, `l_username`, `l_domain`,
-  `r_username`, `r_domain`, `realm`,
-  `auth_username`, `auth_password`, `auth_proxy`, `expires`
-) VALUES (
-  'provider2-reg-1',
-  'your_username', 'sip.provider2.com',
-  'your_username', 'sip.provider2.com', 'sip.provider2.com',
-  'your_username', 'your_password',
-  'sip:sip.provider2.com:5060', 120
-);
+-- ── UAC Registration ─────────────────────────────────────────
+-- Synchrovox registration is handled by Asterisk pjsip.conf
+-- ([synchrovox-registration]) — Kamailio uacreg is intentionally empty
+-- so the two don't race to register the same account.

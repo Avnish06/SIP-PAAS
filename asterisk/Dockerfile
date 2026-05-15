@@ -1,11 +1,12 @@
-FROM debian:bookworm-slim
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    asterisk \
-    asterisk-mysql \
-    asterisk-config \
-    sngrep \
-    curl \
+      asterisk \
+      asterisk-modules \
+      sngrep \
+      curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY conf/ /etc/asterisk/

@@ -1,6 +1,9 @@
 import axios from 'axios';
 
-const BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
+// Always use localhost:3000 when running locally — avoids broken public IP after IP change
+const BASE = (typeof window !== 'undefined' && window.location.hostname === 'localhost')
+  ? 'http://localhost:3000'
+  : (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000');
 
 const api = axios.create({ baseURL: `${BASE}/v1` });
 
