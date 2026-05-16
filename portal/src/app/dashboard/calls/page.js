@@ -180,25 +180,44 @@ function BrowserPhone() {
         // event fires after pc is created but tracks can arrive in the same
         // tick). Once the SIP session is confirmed, the receivers are
         // guaranteed populated — pull the remote audio track from there and
-        // bind it to the <audio> element if it isn't already.
+        // bind it to the <audio> element.
+        //
+        // CRITICAL: attach UNCONDITIONALLY (do NOT gate on `!srcObject`). On
+        // the second call after a hangup, srcObject still points at the
+        // previous call's now-ended stream, and gating on `!srcObject` would
+        // skip attaching the new track — leaving the audio element playing a
+        // dead stream's silence. That was the "first call works, second call
+        // silent" bug.
         const pc = session.connection
         if (!pc) return
         const audioRecv = pc.getReceivers().find(r => r.track?.kind === 'audio')
         console.log('[SIP] confirmed — audio receivers=', pc.getReceivers().length,
                     'hasAudio=', !!audioRecv,
                     'srcObjectSet=', !!remoteAudio.current?.srcObject)
-        if (audioRecv && remoteAudio.current && !remoteAudio.current.srcObject) {
+        if (audioRecv && remoteAudio.current) {
           const stream = new MediaStream([audioRecv.track])
           remoteAudio.current.srcObject = stream
           remoteAudio.current.volume = 1.0
           remoteAudio.current.muted = false
           remoteAudio.current.play()
-            .then(() => console.log('[SIP] backup attach + play OK'))
+            .then(() => console.log('[SIP] backup attach + play OK (unconditional)'))
             .catch(err => console.warn('[SIP] backup play blocked:', err?.name))
         }
       })
-      session.on('ended',   () => { setCallState('idle'); clearInterval(timerRef.current) })
+      // Clear srcObject when the call ends so the next call starts clean.
+      // Without this, the audio element keeps referencing the previous call's
+      // dead stream and the next inbound track never gets attached.
+      const clearRemoteAudio = () => {
+        try {
+          if (remoteAudio.current) {
+            remoteAudio.current.pause()
+            remoteAudio.current.srcObject = null
+          }
+        } catch (_) {}
+      }
+      session.on('ended',   () => { clearRemoteAudio(); setCallState('idle'); clearInterval(timerRef.current) })
       session.on('failed',  e  => {
+        clearRemoteAudio()
         setCallState('idle')
         clearInterval(timerRef.current)
         setStatusMsg('Call failed: ' + (e.cause || e.message || 'unknown'))
@@ -211,6 +230,40 @@ function BrowserPhone() {
         })
         pc.addEventListener('icegatheringstatechange', () => {
           console.log('[SIP] ICE gathering:', pc.iceGatheringState)
+        })
+        // Live inbound RTP stats — proves whether the destination's audio is
+        // physically arriving at the browser. If packetsReceived stays at 0
+        // while Asterisk shows packets transmitted, the issue is network or
+        // DTLS/SRTP. If packetsReceived climbs but audioLevel is 0, the issue
+        // is the <audio> element or browser policy.
+        const statsTimer = setInterval(async () => {
+          if (!pc || pc.connectionState === 'closed') { clearInterval(statsTimer); return }
+          try {
+            const stats = await pc.getStats()
+            stats.forEach(r => {
+              if (r.type === 'inbound-rtp' && r.kind === 'audio') {
+                console.log('[SIP] INBOUND audio rtp:',
+                  'packetsReceived=', r.packetsReceived,
+                  'bytesReceived=', r.bytesReceived,
+                  'packetsLost=', r.packetsLost,
+                  'jitter=', r.jitter,
+                  'audioLevel=', r.audioLevel,
+                  'totalSamplesReceived=', r.totalSamplesReceived,
+                  'concealedSamples=', r.concealedSamples)
+              }
+              if (r.type === 'candidate-pair' && r.state === 'succeeded' && r.nominated) {
+                console.log('[SIP] active ICE pair: local=', r.localCandidateId, 'remote=', r.remoteCandidateId, 'bytesRecv=', r.bytesReceived, 'bytesSent=', r.bytesSent)
+              }
+              if (r.type === 'remote-candidate') {
+                console.log('[SIP] remote-candidate:', r.id, r.candidateType, r.ip || r.address, r.port, r.protocol)
+              }
+            })
+          } catch (e) { console.warn('[SIP] getStats failed:', e) }
+        }, 2000)
+        pc.addEventListener('connectionstatechange', () => {
+          if (pc.connectionState === 'closed' || pc.connectionState === 'failed') {
+            clearInterval(statsTimer)
+          }
         })
         // Log local tracks — confirms mic is attached
         setTimeout(() => {
@@ -236,6 +289,10 @@ function BrowserPhone() {
 
           const attachAudio = () => {
             if (!remoteAudio.current) { console.warn('[SIP] no <audio> element ref'); return }
+            // Detach any previous stream first — replacing srcObject directly
+            // works in modern browsers, but pausing first avoids glitches when
+            // the previous stream's tracks are already ended.
+            try { remoteAudio.current.pause() } catch (_) {}
             remoteAudio.current.srcObject = stream
             remoteAudio.current.volume = 1.0
             remoteAudio.current.muted = false
@@ -311,16 +368,30 @@ function BrowserPhone() {
     // Use the pre-obtained mic stream directly (captured in connect()).
     // This avoids the "one-way audio" bug where a second getUserMedia call returns
     // silent/non-capturing tracks on some Chrome builds.
+    //
+    // ICE config tuned for FAST call setup AND two-way audio.
+    //
+    // JsSIP blocks on `iceGatheringState === 'complete'` before sending the
+    // INVITE. The earlier 3×TURN setup (openrelay.metered.ca) made gathering
+    // take 20-30 s because each TURN allocation timed out — that was the
+    // missing 30 s in the call-connect timeline.
+    //
+    // We use exactly ONE fast STUN server (no TURN, no second STUN). Single
+    // Google STUN replies in ~200-400 ms, so gathering completes well under
+    // a second and INVITE goes out quickly.
+    //
+    // Why we don't drop STUN entirely: with only host candidates the browser
+    // offers a private LAN IP in its SDP. Asterisk's ICE checks toward that
+    // private address fail, and the return media path (destination → you)
+    // ends up one-way silent even though outbound (you → destination) works
+    // via Asterisk's `rtp_symmetric`. The srflx (public) candidate from STUN
+    // gives Asterisk a reachable address for the reverse SRTP stream.
     const callOptions = {
       pcConfig: {
+        iceTransportPolicy: 'all',
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          // TURN relay — ensures audio works even through Docker/NAT
-          { urls: 'turn:openrelay.metered.ca:80',    username: 'openrelayproject', credential: 'openrelayproject' },
-          { urls: 'turn:openrelay.metered.ca:443',   username: 'openrelayproject', credential: 'openrelayproject' },
-          { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-        ]
+        ],
       },
     }
     if (localStreamRef.current) {
