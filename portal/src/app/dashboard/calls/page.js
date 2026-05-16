@@ -169,6 +169,41 @@ function BrowserPhone() {
     ua.on('newRTCSession', ({ session }) => {
       sessionRef.current = session
 
+      // ── FAST-FORWARD ICE GATHERING ──────────────────────────────────────
+      // JsSIP normally waits for `iceGatheringState === 'complete'` before
+      // sending the INVITE. With even one STUN server the browser can sit in
+      // 'gathering' for 20-30 s waiting for STUN replies or its internal
+      // timeout — that was the missing 30 s of the 45-second call-connect
+      // time.
+      //
+      // JsSIP fires an 'icecandidate' event per candidate, each carrying a
+      // `ready` callback that, when invoked, makes JsSIP proceed and send
+      // the INVITE immediately. We fast-forward on either trigger:
+      //   • the first srflx (public-IP) candidate is gathered — at that
+      //     point we have everything we need for bidirectional media, OR
+      //   • a 1-second timeout fires — guarantees we never wait long even
+      //     if STUN is silent.
+      // Host candidates alone aren't enough (the "audio is one-way" bug
+      // came from offering only host), so we require srflx OR the timeout.
+      let iceFastForwarded = false
+      const fastForward = (why) => {
+        if (iceFastForwarded) return
+        iceFastForwarded = true
+        console.log('[SIP] ICE fast-forward:', why)
+        try { iceTimeout && clearTimeout(iceTimeout) } catch (_) {}
+        try { iceReadyCb && iceReadyCb() } catch (e) { console.warn('[SIP] ready() threw:', e) }
+      }
+      let iceReadyCb = null
+      const iceTimeout = setTimeout(() => fastForward('1 s timeout — sending INVITE with whatever candidates we have'), 1000)
+      session.on('icecandidate', (ev) => {
+        // Capture the latest `ready` so the timeout can call it too.
+        iceReadyCb = ev.ready
+        const c = ev.candidate
+        if (c && (c.type === 'srflx' || (c.candidate || '').includes(' typ srflx'))) {
+          fastForward('srflx candidate gathered: ' + (c.address || c.ip || c.candidate))
+        }
+      })
+
       session.on('progress',  () => setCallState('ringing'))
       session.on('confirmed', () => {
         setCallState('incall')
