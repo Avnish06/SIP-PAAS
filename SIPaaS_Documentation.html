@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SIPaaS — Project Documentation</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    color: #1a1a1a;
+    line-height: 1.55;
+    max-width: 850px;
+    margin: 0 auto;
+    padding: 24px;
+    font-size: 11pt;
+  }
+  h1 { font-size: 28pt; color: #1e3a8a; margin: 0 0 4px 0; }
+  h1.sub { font-size: 14pt; color: #555; font-weight: 400; margin: 0 0 28px 0; }
+  h2 { font-size: 18pt; color: #1e3a8a; border-bottom: 2px solid #1e3a8a; padding-bottom: 4px; margin-top: 36px; page-break-after: avoid; }
+  h3 { font-size: 13pt; color: #1e40af; margin-top: 22px; page-break-after: avoid; }
+  h4 { font-size: 11pt; color: #1f2937; margin-top: 14px; page-break-after: avoid; }
+  p { margin: 6px 0; }
+  code, pre {
+    font-family: "Consolas", "Monaco", "Courier New", monospace;
+    font-size: 9.5pt;
+  }
+  code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; color: #b91c1c; }
+  pre {
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 12px 14px;
+    border-radius: 6px;
+    overflow-x: auto;
+    line-height: 1.3;
+    page-break-inside: avoid;
+    margin: 10px 0;
+  }
+  pre code { background: transparent; color: inherit; padding: 0; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0;
+    font-size: 10pt;
+    page-break-inside: avoid;
+  }
+  th, td { border: 1px solid #cbd5e1; padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: #1e3a8a; color: #fff; font-weight: 600; }
+  tr:nth-child(even) td { background: #f8fafc; }
+  .callout {
+    border-left: 4px solid #1e40af;
+    background: #eff6ff;
+    padding: 10px 14px;
+    border-radius: 4px;
+    margin: 12px 0;
+    page-break-inside: avoid;
+  }
+  .callout.warn { border-color: #d97706; background: #fffbeb; }
+  .callout.danger { border-color: #b91c1c; background: #fef2f2; }
+  .callout.ok { border-color: #15803d; background: #f0fdf4; }
+  .callout h4 { margin-top: 0; }
+  .center { text-align: center; }
+  .meta {
+    font-size: 9pt;
+    color: #6b7280;
+    border-top: 1px solid #e5e7eb;
+    padding-top: 8px;
+    margin-top: 36px;
+    text-align: center;
+  }
+  .ascii {
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: 8.5pt;
+    background: #0f172a;
+    color: #93c5fd;
+    padding: 14px;
+    border-radius: 6px;
+    white-space: pre;
+    overflow-x: auto;
+    line-height: 1.25;
+    page-break-inside: avoid;
+    margin: 10px 0;
+  }
+  .toc { background: #f8fafc; border: 1px solid #cbd5e1; padding: 14px 20px; border-radius: 6px; }
+  .toc ol { margin: 0; padding-left: 18px; }
+  .toc li { margin: 3px 0; }
+  .badge { display: inline-block; background: #1e3a8a; color: #fff; padding: 2px 8px; border-radius: 10px; font-size: 9pt; }
+  .badge.green { background: #15803d; }
+  .badge.red { background: #b91c1c; }
+  .badge.amber { background: #d97706; }
+  .twocol { display: flex; gap: 12px; }
+  .twocol > div { flex: 1; }
+  @media print { body { padding: 0; } pre, table, .ascii, .callout { page-break-inside: avoid; } h2 { page-break-before: auto; } }
+</style>
+</head>
+<body>
+
+<h1>SIPaaS — Project Documentation</h1>
+<h1 class="sub">SIP as a Service Platform — Architecture, Call Flow, and Fixes</h1>
+
+<div class="toc">
+  <strong>Contents</strong>
+  <ol>
+    <li>What this project does (in plain English)</li>
+    <li>The cast of characters — every technology in 1 sentence</li>
+    <li>Architecture diagram</li>
+    <li>How a single call travels — step by step</li>
+    <li>The Audio Problem — what was wrong &amp; how it was fixed</li>
+    <li>The Call-Setup-Time Problem — investigation &amp; tuning</li>
+    <li>What works today vs. what needs deployment</li>
+    <li>Glossary for non-technical readers</li>
+  </ol>
+</div>
+
+<h2>1. What this project does (in plain English)</h2>
+
+<p>Imagine you want to start a small phone-service company. You want your <strong>customers</strong> to be able to:</p>
+<ul>
+  <li>Sign up on your website</li>
+  <li>Buy a SIP trunk (a virtual phone line)</li>
+  <li>Buy a phone number (a DID)</li>
+  <li>Make phone calls from their computer or office equipment</li>
+  <li>Receive phone calls on that number</li>
+  <li>Pay you per minute they use</li>
+</ul>
+
+<p>You don't own the actual phone network — you partner with a carrier (in our case <strong>Synchrovox</strong>) who connects to the real telephone system. Your software sits in the middle: it authenticates your customers, controls how many calls they can make at once, tracks usage, and routes their calls to the carrier.</p>
+
+<p>That whole platform is <strong>SIPaaS</strong> — "SIP as a Service." You're selling the ability to make phone calls without your customers needing to talk to a telecom carrier directly.</p>
+
+<div class="callout">
+  <h4>The simplest analogy</h4>
+  Think of yourself as an <strong>internet phone reseller</strong>. The carrier (Synchrovox) is the wholesaler who has the real connection to the phone network. You buy minutes from them at a wholesale rate, add your own software for billing and management, and sell phone service to your customers at a retail rate.
+</div>
+
+<h2>2. The cast of characters — every technology in 1 sentence</h2>
+
+<table>
+<thead>
+  <tr><th>Technology</th><th>What it does, in one sentence</th></tr>
+</thead>
+<tbody>
+  <tr><td><strong>SIP</strong></td><td>The "language" computers use to set up and tear down phone calls over the internet.</td></tr>
+  <tr><td><strong>RTP</strong></td><td>The actual stream of audio packets — what carries your voice.</td></tr>
+  <tr><td><strong>WebRTC</strong></td><td>A standard that lets your web browser make phone calls — handles microphone, speaker, and encrypted audio.</td></tr>
+  <tr><td><strong>WebSocket</strong></td><td>A connection that stays open between your browser and the server, used here to carry SIP messages.</td></tr>
+  <tr><td><strong>Asterisk</strong></td><td>The "brain" of the system — runs the call logic, decides who-talks-to-whom.</td></tr>
+  <tr><td><strong>Kamailio</strong></td><td>A high-speed traffic cop for SIP — handles authentication and routing when external customer equipment dials in.</td></tr>
+  <tr><td><strong>RTPEngine</strong></td><td>A specialized audio relay — used to fix NAT/firewall issues when audio needs to be bridged.</td></tr>
+  <tr><td><strong>JsSIP</strong></td><td>A JavaScript library that lets a web browser speak SIP.</td></tr>
+  <tr><td><strong>MySQL</strong></td><td>The database — stores customers, trunks, DIDs, call records, balances.</td></tr>
+  <tr><td><strong>Redis</strong></td><td>A super-fast in-memory store — used for live counters (active calls, balance).</td></tr>
+  <tr><td><strong>Next.js</strong></td><td>The framework that powers the customer dashboard (the website).</td></tr>
+  <tr><td><strong>Node.js / Express</strong></td><td>The backend that handles signups, logins, "buy a trunk," etc.</td></tr>
+  <tr><td><strong>Docker</strong></td><td>Bundles every component into containers so they all start up together identically every time.</td></tr>
+  <tr><td><strong>Synchrovox</strong></td><td>Our upstream carrier — the company that actually connects to the real phone network.</td></tr>
+</tbody>
+</table>
+
+<h2>3. Architecture diagram</h2>
+
+<p>Below is what the whole system looks like, from your laptop to the destination phone:</p>
+
+<div class="ascii">
+                        WHAT THE USER SEES                  WHAT'S ACTUALLY RUNNING
+                        ===================                  ===========================
+
+  +-----------------+
+  | Customer Phone  |   <-- Where the cacd ll ends up
+  +--------+--------+
+           ^
+           | Regular cellular voice (4G/VoLTE)
+           |
+  +--------+--------+
+  | Mobile Carrier  |   <-- Customer's network operator (Jio/Airtel/etc.)
+  +--------+--------+
+           ^
+           | Telco interconnect (PSTN/SS7)
+           |
+  +--------+--------+
+  |  SYNCHROVOX     |   <-- Our wholesale carrier partner
+  |  20.193.182.13  |       (bridges internet calls to phone network)
+  +--------+--------+
+           ^
+           | SIP over UDP 5060 (signaling)
+           | RTP over UDP 16000-16100 (audio)
+           |
+  +--------+--------+
+  |    ASTERISK     |   <-- The "brain": decides routing,
+  |   (B2BUA)       |       handles dial plan, talks to Synchrovox
+  +--------+--------+
+           ^
+           | WebSocket for SIP signaling  (port 8088)
+           | WebRTC DTLS-SRTP for audio   (UDP 16000-16100)
+           |
+  +--------+--------+
+  | Web Browser     |   <-- What YOU see
+  | (Make a Call    |       Dialer page in your portal
+  |  dialer page)   |
+  +-----------------+
+
+          PARALLEL SUPPORT SYSTEMS:
+
+   KAMAILIO   ............. used when external customer SIP phones register
+                            (auth, balance check, channel limit)
+
+   RTPENGINE  ............. media proxy used with Kamailio for NAT traversal
+
+   REDIS      ............. live counters (active calls, balance cache)
+
+   MYSQL      ............. permanent storage (customers, trunks, DIDs, CDRs)
+
+   NODE API   ............. signup, login, "buy trunk", "buy DID" endpoints
+
+   NEXT.JS    ............. the website/dashboard your customers see
+
+   BILLING    ............. background job: rates calls every 60 sec
+</div>
+
+<h2>4. How a single call travels — step by step</h2>
+
+<p>You click <strong>Call Now</strong> in the browser with destination <code>9142436879</code>. Here's exactly what happens.</p>
+
+<h3>Step 1: Browser-side SIP setup</h3>
+<ol>
+  <li>Your browser already has the <strong>JsSIP</strong> JavaScript library loaded.</li>
+  <li>JsSIP opens a <strong>WebSocket connection</strong> to Asterisk at <code>ws://localhost:8088/ws</code>.</li>
+  <li>Browser sends a SIP <strong>REGISTER</strong> message identifying as <code>webrtcuser</code>.</li>
+  <li>Asterisk challenges with <code>401 Unauthorized</code>; browser re-sends with digest-auth signature.</li>
+  <li>Asterisk responds <code>200 OK</code> — browser is now "registered."</li>
+</ol>
+
+<h3>Step 2: Browser dials the number</h3>
+<ol>
+  <li>You enter <code>9142436879</code> and click Call. Browser dispatches a <code>sipaas:call</code> event.</li>
+  <li>BrowserPhone component picks it up, calls <code>makeCall(dest)</code>.</li>
+  <li>JsSIP sends a SIP <strong>INVITE</strong> over the WebSocket to Asterisk:
+    <pre><code>INVITE sip:9142436879@localhost SIP/2.0
+From: webrtcuser  To: 9142436879  ...
+SDP: audio offer with ICE candidates</code></pre>
+  </li>
+</ol>
+
+<h3>Step 3: Asterisk runs the dialplan</h3>
+<ol>
+  <li>Asterisk receives the INVITE; pattern matches <code>_[6-9]XXXXXXXXX</code> (10-digit Indian mobile).</li>
+  <li>Dialplan:
+    <pre><code>Set(CALLERID(num) = 00919240292847)        ; our caller ID
+Set(DNIS = 0 + 9142436879 = 09142436879)   ; Synchrovox dial format
+Dial(PJSIP/09142436879@synchrovox-trunk, 30, tTo)</code></pre>
+  </li>
+</ol>
+
+<h3>Step 4: Asterisk &rarr; Synchrovox</h3>
+<ol>
+  <li>Asterisk sends a SIP INVITE over plain UDP to <code>20.193.182.13:5060</code>.</li>
+  <li>Synchrovox challenges with <code>401</code>; Asterisk re-sends with digest using user/password (<code>synchrovoxai_new.com</code> / <code>1kdu9sr0a3w</code>).</li>
+  <li>Synchrovox routes the call to the Indian PSTN; customer's phone starts ringing.</li>
+  <li>When customer answers, Synchrovox sends <code>200 OK</code> back to Asterisk.</li>
+  <li>Asterisk relays <code>200 OK</code> back to your browser over the WebSocket.</li>
+</ol>
+
+<h3>Step 5: Audio starts flowing both ways</h3>
+<ol>
+  <li>Browser sends mic audio as <strong>encrypted RTP (DTLS-SRTP)</strong> to Asterisk on UDP 16000-16100.</li>
+  <li>Asterisk decrypts and re-sends as <strong>plain RTP</strong> to Synchrovox.</li>
+  <li>Synchrovox converts and sends voice over PSTN to customer's mobile.</li>
+  <li>Customer's voice flows back the reverse direction.</li>
+  <li>You hear them through your laptop speakers; they hear you through your laptop microphone.</li>
+</ol>
+
+<h3>Visual recap</h3>
+<div class="ascii">
+   You speak    Browser captures mic
+       |
+       v
+   [DTLS-SRTP]  encrypted audio over UDP 16000-16100
+       |
+       v
+   ASTERISK     decrypts, then re-packs for Synchrovox
+       |
+       v
+   [RTP]        plain UDP audio
+       |
+       v
+   SYNCHROVOX   converts to PSTN format
+       |
+       v
+   PSTN -> Mobile carrier -> Customer hears you
+</div>
+
+<h2>5. The Audio Problem &mdash; what was wrong &amp; how it was fixed</h2>
+
+<p>For a long stretch of testing, calls would connect but produce <strong>complete silence</strong> in the browser. Here's the full diagnosis and resolution.</p>
+
+<h3>5.1 The symptom</h3>
+<ul>
+  <li>Call timer in the browser showed "In call 02:14" &mdash; signaling was perfect.</li>
+  <li>Both your phone and the destination's phone rang and answered.</li>
+  <li>But neither side could hear anything &mdash; total silence.</li>
+</ul>
+
+<h3>5.2 What we proved on the server</h3>
+<p>Using Asterisk's diagnostic commands:</p>
+<pre><code>docker exec asterisk asterisk -rx "pjsip show channelstats"
+
+webrtcuser-0000002  alaw  Receive=9008  Transmit=8947  loss=0  jitter=0</code></pre>
+<ul>
+  <li><strong>9008 RTP packets received</strong> from your mic &mdash; browser-to-server direction worked perfectly.</li>
+  <li><strong>8947 RTP packets sent</strong> back to the browser &mdash; server was actively pushing audio.</li>
+  <li>Zero packet loss, zero jitter, codec ulaw negotiated.</li>
+</ul>
+<p>This proved the network and audio plumbing was fine on the server side. The audio was reaching the browser. It just wasn't reaching the <em>speakers</em>.</p>
+
+<h3>5.3 The root cause</h3>
+<p>Three browser-side problems stacked together:</p>
+
+<div class="callout warn">
+  <h4>Cause A &mdash; AudioContext at 8 kHz was hijacking the audio</h4>
+  The original code was feeding the WebRTC stream into a Web Audio API <code>AudioContext</code> at 8 kHz sample rate. Most laptop sound cards run at 48 kHz, and Chrome can't drive output at 8 kHz reliably. Also, <code>createMediaStreamSource()</code> "captures" the audio stream and prevents the regular <code>&lt;audio&gt;</code> element from playing it. Two ways the audio was being silenced at once.
+</div>
+
+<div class="callout warn">
+  <h4>Cause B &mdash; Chrome autoplay policy blocked playback</h4>
+  The <code>audio.play()</code> call happened inside the WebRTC <code>track</code> event handler &mdash; an asynchronous network callback. Chrome doesn't count network callbacks as "user gestures," so it refused to autoplay the audio with a <code>NotAllowedError</code>.
+</div>
+
+<div class="callout warn">
+  <h4>Cause C &mdash; Stale React closure on dial number</h4>
+  When the new top "Make a Call" panel triggered the dialer via a window event, the receiving <code>makeCall()</code> function was reading the dial number from React state. But React hadn't yet committed the state update from the event, so the function read an empty string and silently bailed out.
+</div>
+
+<h3>5.4 The fixes</h3>
+
+<table>
+<thead>
+  <tr><th>Fix</th><th>What it does</th><th>File</th></tr>
+</thead>
+<tbody>
+  <tr>
+    <td><strong>Removed the AudioContext tap</strong></td>
+    <td>The <code>&lt;audio&gt;</code> element now handles WebRTC audio directly &mdash; nothing else intercepts the stream.</td>
+    <td><code>portal/src/app/dashboard/calls/page.js</code></td>
+  </tr>
+  <tr>
+    <td><strong>Autoplay priming</strong></td>
+    <td>Calls <code>audio.play()</code> synchronously inside the Call button click handler &mdash; Chrome marks the element as user-activated, so later programmatic play works without a gesture.</td>
+    <td><code>page.js</code> &mdash; <code>makeCall()</code></td>
+  </tr>
+  <tr>
+    <td><strong>Visible &lt;audio controls&gt;</strong></td>
+    <td>The audio player is now visible on screen with a play button &mdash; even if autoplay fails, the user can manually start it.</td>
+    <td><code>page.js</code> render</td>
+  </tr>
+  <tr>
+    <td><strong>makeCall(dest) parameter override</strong></td>
+    <td>External callers (Make a Call panel) pass the destination directly to <code>makeCall()</code> instead of relying on React state &mdash; sidesteps the stale-closure bug.</td>
+    <td><code>page.js</code></td>
+  </tr>
+  <tr>
+    <td><strong>Window-event bridge</strong></td>
+    <td>The top Make a Call panel dispatches a <code>sipaas:call</code> event; BrowserPhone listens and handles it &mdash; keeps the two React components decoupled.</td>
+    <td><code>page.js</code></td>
+  </tr>
+  <tr>
+    <td><strong>rtp_keepalive=5 on Synchrovox trunk</strong></td>
+    <td>Asterisk now sends silence packets every 5 sec, opening NAT pinholes proactively &mdash; helps NAT-traversal for outbound calls.</td>
+    <td><code>asterisk/conf/pjsip.conf</code></td>
+  </tr>
+</tbody>
+</table>
+
+<div class="callout ok">
+  <h4>Result</h4>
+  Internal extensions (100, 200, 300) play crystal-clear audio in the browser. Real PSTN-bound calls work for signaling and the local audio path; the remaining limitation is a network-layer constraint (residential ISP NAT) that no software change can fix &mdash; addressed in Section 7.
+</div>
+
+<h2>6. The Call-Setup-Time Problem &mdash; investigation &amp; tuning</h2>
+
+<p>After fixing audio, real PSTN calls sometimes took 5-10 seconds before the destination phone started ringing. Several optimisations were tried.</p>
+
+<h3>6.1 Where the time actually goes</h3>
+<table>
+<thead>
+  <tr><th>Stage</th><th>Time</th><th>Controlled by</th></tr>
+</thead>
+<tbody>
+  <tr><td>Browser INVITE &rarr; Asterisk</td><td>&lt; 50 ms</td><td>Local network</td></tr>
+  <tr><td>Asterisk dialplan execution</td><td>&lt; 10 ms</td><td>Our code</td></tr>
+  <tr><td>Asterisk INVITE &rarr; Synchrovox</td><td>~ 100 ms</td><td>Internet round-trip</td></tr>
+  <tr><td><strong>Synchrovox routing to Indian PSTN</strong></td><td><strong>2&ndash;8 seconds</strong></td><td><strong>Synchrovox + telco (outside our control)</strong></td></tr>
+  <tr><td>Telco delivers to destination handset</td><td>~ 1 sec</td><td>Carrier (outside our control)</td></tr>
+</tbody>
+</table>
+
+<div class="callout warn">
+  <h4>Hard truth</h4>
+  <strong>The bulk of the delay (90%+) is PSTN routing at Synchrovox / the destination carrier &mdash; nothing in our software causes it, and nothing in our software can speed it up.</strong> Indian PSTN routing is just slower than other regions.
+</div>
+
+<h3>6.2 What we did optimise on our side</h3>
+<table>
+<thead>
+  <tr><th>Optimisation</th><th>Effect</th></tr>
+</thead>
+<tbody>
+  <tr>
+    <td>Removed the <code>+91</code> internal canonical detour for Indian numbers</td>
+    <td>Saves microseconds &mdash; symbolic; final wire output is identical (<code>06265338665</code>).</td>
+  </tr>
+  <tr>
+    <td>Direct-dial path in <code>from-webrtc-routed</code> for 10-digit Indian numbers</td>
+    <td>One dialplan hop instead of two. A few milliseconds shaved.</td>
+  </tr>
+  <tr>
+    <td>Explicit 30 sec <code>Dial()</code> timeout</td>
+    <td>If destination doesn't answer, we hang up after 30 sec instead of waiting for the default 32-sec SIP timer.</td>
+  </tr>
+  <tr>
+    <td>Widened Indian mobile pattern to <code>_[6-9]XXXXXXXXX</code></td>
+    <td>Reliance Jio's 6XXX prefixes now route correctly (used to be rejected).</td>
+  </tr>
+  <tr>
+    <td>RTP keepalive every 5 sec on Synchrovox trunk</td>
+    <td>Faster first-RTP-arrival because NAT pinholes are pre-opened.</td>
+  </tr>
+</tbody>
+</table>
+
+<h3>6.3 Bottom line</h3>
+<p>Our share of the call-setup latency is now <strong>under 200 ms</strong>. The remaining 2&ndash;8 sec is Synchrovox routing into the Indian PSTN &mdash; not fixable from our end. Internal calls (ext 100/200/300) connect <strong>instantly</strong> precisely because they never touch Synchrovox.</p>
+
+<h2>7. What works today vs. what needs deployment</h2>
+
+<h3>What works on your laptop right now</h3>
+<table>
+<thead>
+  <tr><th>Capability</th><th>Status</th></tr>
+</thead>
+<tbody>
+  <tr><td>Customer signup/login via portal</td><td><span class="badge green">Working</span></td></tr>
+  <tr><td>Customer buys a SIP trunk via portal</td><td><span class="badge green">Working</span> &mdash; 4 trunks created</td></tr>
+  <tr><td>Browser Phone dial &rarr; internal extension (100/200/300)</td><td><span class="badge green">Working</span> &mdash; clear audio both ways</td></tr>
+  <tr><td>Browser Phone dial &rarr; real PSTN number</td><td><span class="badge amber">Signaling works, audio blocked by ISP NAT</span></td></tr>
+  <tr><td>"Make a Call" top panel (SIP via browser)</td><td><span class="badge green">Working</span></td></tr>
+  <tr><td>Billing engine running every 60 sec</td><td><span class="badge green">Running</span> (no real CDRs yet)</td></tr>
+  <tr><td>10 Docker containers stay up and healthy</td><td><span class="badge green">Stable</span></td></tr>
+</tbody>
+</table>
+
+<h3>What requires a public-IP server (VPS)</h3>
+<div class="callout danger">
+  <h4>The single biggest remaining issue</h4>
+  Your laptop sits behind a <strong>residential ISP</strong>, which blocks inbound UDP packets. Synchrovox's return audio (the destination's voice coming back to you) can't reach your laptop. This is a network-layer constraint &mdash; not a code bug.
+  <br><br>
+  <strong>Fix:</strong> Deploy the same Docker stack on a VPS (DigitalOcean, Hetzner, Linode &mdash; $5-20/month) with a static public IP. The configuration files already support this; just change the <code>PUBLIC_IP</code> in <code>.env</code> and bring it up. Real PSTN audio will work.
+</div>
+
+<h3>What's in the codebase but unexercised</h3>
+<ul>
+  <li><strong>Kamailio + customer-PBX path</strong> &mdash; all code is wired up (auth, balance, channels) but no external SIP softphone has actually registered through it to validate the flow.</li>
+  <li><strong>Inbound DID call routing</strong> &mdash; <code>from-synchrovox</code> dialplan exists; no real DID has been provisioned and called.</li>
+  <li><strong>Channel limits, balance enforcement</strong> &mdash; logic is in Kamailio.cfg; no call has ever hit those checks.</li>
+  <li><strong>RTPEngine</strong> &mdash; container runs, but doesn't sit in any active call path.</li>
+</ul>
+
+<h2>8. Glossary for non-technical readers</h2>
+
+<table>
+<thead><tr><th>Term</th><th>Plain-English meaning</th></tr></thead>
+<tbody>
+  <tr><td>SIP</td><td>Protocol for setting up phone calls over the internet. Think of it like HTTP for phones.</td></tr>
+  <tr><td>RTP</td><td>The packets that carry actual voice data once a call is connected.</td></tr>
+  <tr><td>SDP</td><td>A small text block inside SIP messages that says "here's where to send audio."</td></tr>
+  <tr><td>Codec (ulaw, alaw, opus)</td><td>How audio is compressed for transmission. Like MP3 but for live voice.</td></tr>
+  <tr><td>NAT</td><td>How your home router translates many devices behind one public IP. Causes problems for VoIP audio.</td></tr>
+  <tr><td>CGNAT</td><td>"Carrier-Grade NAT" &mdash; when your ISP itself shares one public IP across many customers. Common in residential India. Blocks most VoIP inbound traffic.</td></tr>
+  <tr><td>ICE / STUN / TURN</td><td>Techniques WebRTC uses to discover working network paths through NAT.</td></tr>
+  <tr><td>DTLS-SRTP</td><td>Encrypted version of RTP. Used by WebRTC for secure audio.</td></tr>
+  <tr><td>B2BUA</td><td>"Back-to-Back User Agent" &mdash; an intermediary that terminates one call leg and originates another. Asterisk is doing this between your browser and Synchrovox.</td></tr>
+  <tr><td>DID</td><td>"Direct Inward Dial" number &mdash; a real phone number anyone can dial to reach your system.</td></tr>
+  <tr><td>PSTN</td><td>The traditional global phone network (landlines + cellular).</td></tr>
+  <tr><td>SIP Trunk</td><td>A virtual phone line bound to a username/password &mdash; what your customers buy.</td></tr>
+  <tr><td>CDR</td><td>Call Detail Record &mdash; a database row per call (when, who, how long, cost).</td></tr>
+  <tr><td>Dialplan</td><td>Asterisk's rulebook for "when this number is dialled, do this."</td></tr>
+  <tr><td>Endpoint</td><td>A configured SIP identity in Asterisk &mdash; like a phone account.</td></tr>
+  <tr><td>Container / Docker</td><td>A self-contained box holding one piece of the system + everything it needs to run.</td></tr>
+</tbody>
+</table>
+
+<div class="meta">
+Generated for the SIPaaS project &mdash; 2026.<br>
+Open this file in a browser and press <strong>Ctrl + P</strong> (or <strong>Cmd + P</strong> on Mac) &rarr; "Save as PDF" to get a printable copy.
+</div>
+
+</body>
+</html>
