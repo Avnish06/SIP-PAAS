@@ -11,8 +11,8 @@
 type=transport
 protocol=udp
 bind=0.0.0.0:5080
-external_media_address=14.139.238.134
-external_signaling_address=14.139.238.134
+external_media_address=152.58.97.143
+external_signaling_address=152.58.97.143
 local_net=192.168.0.0/16
 local_net=172.16.0.0/12
 local_net=10.0.0.0/8
@@ -21,8 +21,8 @@ local_net=10.0.0.0/8
 type=transport
 protocol=tcp
 bind=0.0.0.0:5080
-external_media_address=14.139.238.134
-external_signaling_address=14.139.238.134
+external_media_address=152.58.97.143
+external_signaling_address=152.58.97.143
 local_net=192.168.0.0/16
 local_net=172.16.0.0/12
 local_net=10.0.0.0/8
@@ -66,7 +66,7 @@ rtp_symmetric=yes
 force_rport=yes
 rewrite_contact=yes
 allow=!all,ulaw,alaw,g722
-from_domain=14.139.238.134
+from_domain=152.58.97.143
 
 ; ─────────────────────────────────────────────────────────────
 ;  Synchrovox — IP-based upstream trunk (no registration)
@@ -102,8 +102,8 @@ transport=transport-udp
 outbound_auth=synchrovox-auth
 server_uri=sip:20.193.182.13:5060
 client_uri=sip:synchrovoxai_new.com@20.193.182.13:5060
-expiration=30
-retry_interval=10
+expiration=120
+retry_interval=60
 contact_user=synchrovoxai_new.com
 
 [synchrovox-identify]
@@ -152,7 +152,7 @@ outbound_proxy=sip:20.193.182.13:5060
 ;  registration alive even though we never Dial() out through it.
 ;
 ;  DID / number : 9240292847   (CLI 00919240292847)
-;  User         : 9262102714_synchrovox.com
+;  User         : 9240292847_synchrovox.com
 ;
 ;  Note: inbound INVITEs still arrive FROM 20.193.182.13, so the existing
 ;  [synchrovox-identify] (match=20.193.182.13) classifies them onto the
@@ -162,22 +162,22 @@ outbound_proxy=sip:20.193.182.13:5060
 [synchrovox-inbound-auth]
 type=auth
 auth_type=userpass
-username=9262102714_synchrovox.com
-password=0l1gprb1sc7o
+username=9240292847_synchrovox.com
+password=r8x6ihu34
 
 [synchrovox-inbound-registration]
 type=registration
 transport=transport-udp
 outbound_auth=synchrovox-inbound-auth
 server_uri=sip:20.193.182.13:5060
-client_uri=sip:9262102714_synchrovox.com@20.193.182.13:5060
-expiration=30
-retry_interval=10
-contact_user=9262102714_synchrovox.com
+client_uri=sip:9240292847_synchrovox.com@20.193.182.13:5060
+expiration=120
+retry_interval=60
+contact_user=9240292847_synchrovox.com
 
 ; ─────────────────────────────────────────────────────────────
 ;  WebRTC browser endpoint — portal in-browser phone
-;  Connects via ws://14.139.238.134:8088/ws
+;  Connects via ws://152.58.97.143:8088/ws
 ;  Username: webrtcuser  Password: WebRTC2024!
 ; ─────────────────────────────────────────────────────────────
 [webrtc-auth]

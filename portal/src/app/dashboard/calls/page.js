@@ -24,12 +24,14 @@ const STATUS_BADGE = {
 function BrowserPhone() {
   const [sipReady,    setSipReady]    = useState(false)   // JsSIP script loaded
   const [regState,    setRegState]    = useState('idle')  // idle|connecting|registered
-  const [callState,   setCallState]   = useState('idle')  // idle|calling|ringing|incall
+  const [callState,   setCallState]   = useState('idle')  // idle|calling|ringing|incoming|incall
   const [statusMsg,   setStatusMsg]   = useState('')
   const [dialNum,     setDialNum]     = useState('')
   const [duration,    setDuration]    = useState(0)
+  const [incomingNum, setIncomingNum] = useState('')      // caller id of a ringing inbound call
   const uaRef        = useRef(null)
   const sessionRef   = useRef(null)
+  const iceFastRef   = useRef(null)   // exposes a session's ICE fast-forward to answerCall()
   const timerRef     = useRef(null)
   const remoteAudio  = useRef(null)
   const audioCtxRef  = useRef(null)
@@ -53,9 +55,17 @@ function BrowserPhone() {
   // Asterisk WebRTC SIP — proxied through API port 3000 → Asterisk :8088
   const SIP_USER   = 'webrtcuser'
   const SIP_PASS   = 'WebRTC2024!'
-  // SIP domain matches Asterisk realm. Derived from the page host so it
-  // works on localhost dev and on the public IP without hardcoding.
-  const SIP_DOMAIN = typeof window !== 'undefined' ? window.location.hostname : '152.58.97.143'
+  // SIP host (Asterisk address). Defaults to the page host so it works on
+  // localhost dev and on the public IP without hardcoding. Can be overridden
+  // with ?siphost=<ip> (or localStorage 'sipHost') so a SECURE-context page
+  // served at http://localhost (mic allowed) can register to a REMOTE Asterisk
+  // — e.g. http://localhost:8080/dashboard/calls?siphost=161.248.37.215
+  const SIP_HOST = typeof window !== 'undefined'
+    ? (new URLSearchParams(window.location.search).get('siphost')
+        || window.localStorage.getItem('sipHost')
+        || window.location.hostname)
+    : '152.58.97.143'
+  const SIP_DOMAIN = SIP_HOST
 
   // JsSIP script loader — runs ONCE on mount only.
   useEffect(() => {
@@ -139,7 +149,7 @@ function BrowserPhone() {
     // ── Step 2: probe WebSocket before handing off to JsSIP ──
     // If Asterisk is down, JsSIP retries forever and floods the console.
     // We test the connection ourselves first and abort if it fails.
-    const wsUrl = `ws://${window.location.hostname}:8088/ws`
+    const wsUrl = `ws://${SIP_HOST}:8088/ws`
 
     setRegState('connecting')
     setStatusMsg('Checking SIP server...')
@@ -169,6 +179,20 @@ function BrowserPhone() {
     ua.on('newRTCSession', ({ session }) => {
       sessionRef.current = session
 
+      // ── INBOUND call: ring, don't auto-answer ───────────────────────────
+      // For an incoming INVITE we surface an Answer/Reject prompt and wait for
+      // the user. answerCall() calls session.answer() with the same media/ICE
+      // config used for outbound. We still attach all the listeners below
+      // (progress/confirmed/ended/peerconnection) — they apply to both
+      // directions; only the *trigger* differs (manual answer vs auto call).
+      if (session.direction === 'incoming') {
+        const from = session.remote_identity?.uri?.user
+          || session.remote_identity?.display_name || 'Unknown'
+        setIncomingNum(from)
+        setStatusMsg('')
+        setCallState('incoming')
+      }
+
       // ── FAST-FORWARD ICE GATHERING ──────────────────────────────────────
       // JsSIP normally waits for `iceGatheringState === 'complete'` before
       // sending the INVITE. With even one STUN server the browser can sit in
@@ -194,7 +218,15 @@ function BrowserPhone() {
         try { iceReadyCb && iceReadyCb() } catch (e) { console.warn('[SIP] ready() threw:', e) }
       }
       let iceReadyCb = null
-      const iceTimeout = setTimeout(() => fastForward('1 s timeout — sending INVITE with whatever candidates we have'), 1000)
+      // Expose fast-forward so answerCall() can arm a safety timeout AFTER the
+      // user accepts (an inbound call gathers ICE during answer(), not now).
+      iceFastRef.current = fastForward
+      // For OUTBOUND we arm the 1 s timeout immediately (gather→INVITE). For
+      // INBOUND we must NOT — firing it before the user answers would flip
+      // iceFastForwarded=true and suppress the real fast-forward during answer.
+      const iceTimeout = session.direction === 'outgoing'
+        ? setTimeout(() => fastForward('1 s timeout — sending INVITE with whatever candidates we have'), 1000)
+        : null
       session.on('icecandidate', (ev) => {
         // Capture the latest `ready` so the timeout can call it too.
         iceReadyCb = ev.ready
@@ -204,7 +236,11 @@ function BrowserPhone() {
         }
       })
 
-      session.on('progress',  () => setCallState('ringing'))
+      // Only OUTGOING calls transition to 'ringing' on progress (caller hears
+      // ringback). For an INCOMING call JsSIP auto-sends 180 Ringing, which
+      // ALSO fires 'progress' — if we let it run, it overwrites the 'incoming'
+      // state and the Answer/Reject banner disappears before the user can act.
+      session.on('progress',  () => { if (session.direction === 'outgoing') setCallState('ringing') })
       session.on('confirmed', () => {
         setCallState('incall')
         setDuration(0)
@@ -450,6 +486,48 @@ function BrowserPhone() {
     clearInterval(timerRef.current)
   }
 
+  // Accept a ringing inbound call. Mirrors makeCall's media/ICE setup: reuse
+  // the pre-obtained mic stream and the single-STUN pcConfig, and prime the
+  // <audio> element inside this click handler so the remote track isn't
+  // blocked by the browser autoplay policy when it arrives.
+  function answerCall() {
+    const session = sessionRef.current
+    if (!session || callState !== 'incoming') return
+
+    try {
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)()
+      }
+      if (audioCtxRef.current.state === 'suspended') audioCtxRef.current.resume()
+    } catch (_) {}
+    try {
+      const a = remoteAudio.current
+      if (a) { a.muted = false; a.volume = 1.0; a.play().catch(() => {}) }
+    } catch (_) {}
+
+    const answerOptions = {
+      pcConfig: {
+        iceTransportPolicy: 'all',
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+      },
+    }
+    if (localStreamRef.current) answerOptions.mediaStream = localStreamRef.current
+    else answerOptions.mediaConstraints = { audio: true, video: false }
+
+    try { session.answer(answerOptions) } catch (e) { console.warn('[SIP] answer failed:', e) }
+    // ICE gathering happens now (during answer). Arm a 1 s safety fast-forward
+    // so a silent STUN can't stall the 200 OK; the srflx-candidate handler
+    // usually fires first anyway.
+    setTimeout(() => { try { iceFastRef.current?.('answer 1 s timeout') } catch (_) {} }, 1000)
+    setCallState('incall')
+  }
+
+  // Decline a ringing inbound call → 486 Busy Here.
+  function rejectCall() {
+    try { sessionRef.current?.terminate({ status_code: 486, reason_phrase: 'Busy Here' }) } catch (_) {}
+    setCallState('idle')
+  }
+
   // Returns the active peer connection only if it's still open. replaceTrack
   // on a closed RTCPeerConnection throws InvalidStateError, which is what
   // produced the noisy console error on Stop Tone after a call ended.
@@ -516,6 +594,7 @@ function BrowserPhone() {
   const isReady  = regState === 'registered' && callState === 'idle'
   const isCalling = callState === 'calling' || callState === 'ringing'
   const isInCall  = callState === 'incall'
+  const isIncoming = callState === 'incoming'
 
   const dotColor = {
     idle:        'bg-gray-500',
@@ -525,6 +604,7 @@ function BrowserPhone() {
 
   const stateLabel =
     isInCall   ? `In call  ${fmtTime(duration)}` :
+    isIncoming ? 'Incoming call...' :
     isCalling  ? 'Ringing...' :
     regState === 'connecting' ? 'Connecting...' :
     regState === 'registered' ? 'Ready' :
@@ -585,8 +665,31 @@ function BrowserPhone() {
         )}
       </div>
 
-      {/* Dial pad — shown once registered */}
-      {regState === 'registered' && (
+      {/* Incoming call — Answer / Reject prompt */}
+      {isIncoming && (
+        <div className="mb-4 p-4 bg-green-900/30 border border-green-600 rounded-lg flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <span className="text-green-400 text-2xl leading-none animate-pulse">&#9742;</span>
+            <div>
+              <p className="text-green-300 text-sm font-semibold">Incoming call</p>
+              <p className="text-white font-mono text-lg tracking-wide">{incomingNum || 'Unknown'}</p>
+            </div>
+          </div>
+          <div className="flex gap-3">
+            <button onClick={answerCall}
+              className="bg-green-600 hover:bg-green-500 text-white px-6 py-3 rounded-lg font-bold text-sm transition flex items-center gap-2">
+              &#9742; Answer
+            </button>
+            <button onClick={rejectCall}
+              className="bg-red-600 hover:bg-red-500 text-white px-6 py-3 rounded-lg font-bold text-sm transition flex items-center gap-2">
+              &#9746; Reject
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Dial pad — shown once registered (hidden while a call is ringing in) */}
+      {regState === 'registered' && !isIncoming && (
         <div className="flex gap-3">
           <input
             className="flex-1 px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white font-mono text-base focus:outline-none focus:border-blue-500 tracking-widest"
