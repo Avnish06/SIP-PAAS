@@ -275,7 +275,8 @@ export default function Billing() {
       </div>
 
       <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-        <table className="w-full text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[640px]">
           <thead className="border-b border-gray-800 bg-gray-950/50">
             <tr className="text-gray-400 text-xs uppercase tracking-wide">
               {['Type', 'Amount', 'Balance After', 'Description', 'Date & Time'].map(h => (
@@ -308,6 +309,7 @@ export default function Billing() {
             ))}
           </tbody>
         </table>
+        </div>
         {!txns.length && (
           <div className="p-8 text-center">
             <p className="text-gray-500 text-sm">No transactions found.</p>

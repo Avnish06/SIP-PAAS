@@ -1,11 +1,11 @@
 import axios from 'axios';
 
-// Always use localhost:3000 when running locally — avoids broken public IP after IP change
-const BASE = (typeof window !== 'undefined' && window.location.hostname === 'localhost')
-  ? 'http://localhost:3000'
-  : (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000');
-
-const api = axios.create({ baseURL: `${BASE}/v1` });
+// Same-origin relative base. The browser calls the portal host itself
+// (e.g. http://<portal-host>:8080/v1/...) and Next.js rewrites /v1/* to the
+// API service server-side (see next.config.js). This works identically on
+// localhost and on the VPS public IP — no CORS, no loopback/private-network
+// block, and no need to expose the API port through the firewall.
+const api = axios.create({ baseURL: '/v1' });
 
 api.interceptors.request.use(cfg => {
   const token = typeof window !== 'undefined' ? localStorage.getItem('sipaas_token') : null;

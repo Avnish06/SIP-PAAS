@@ -60,11 +60,16 @@ function BrowserPhone() {
   // with ?siphost=<ip> (or localStorage 'sipHost') so a SECURE-context page
   // served at http://localhost (mic allowed) can register to a REMOTE Asterisk
   // — e.g. http://localhost:8080/dashboard/calls?siphost=161.248.37.215
-  const SIP_HOST = typeof window !== 'undefined'
-    ? (new URLSearchParams(window.location.search).get('siphost')
-        || window.localStorage.getItem('sipHost')
-        || window.location.hostname)
-    : '152.58.97.143'
+  const SIP_HOST = (() => {
+    if (typeof window === 'undefined') return '152.58.97.143'
+    // If ?siphost=<ip> is in the URL, REMEMBER it in localStorage so it
+    // survives login redirects and sidebar navigation (which drop the query
+    // string). Once set, every subsequent load uses the remembered host.
+    // To go back to the local Asterisk, open with ?siphost=localhost.
+    const param = new URLSearchParams(window.location.search).get('siphost')
+    if (param) { try { window.localStorage.setItem('sipHost', param) } catch (_) {} }
+    return param || window.localStorage.getItem('sipHost') || window.location.hostname
+  })()
   const SIP_DOMAIN = SIP_HOST
 
   // JsSIP script loader — runs ONCE on mount only.
@@ -129,7 +134,7 @@ function BrowserPhone() {
     // Browsers only allow getUserMedia on localhost or https pages.
     // If accessed via http://public-ip:8080 the mic will be silently blocked.
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false })
       // Keep stream ALIVE — do NOT stop tracks here. JsSIP will use this exact stream
       // via mediaStream: option in makeCall(), so the mic is already capturing when
       // the WebRTC peer connection is created. Stopping and re-acquiring causes browsers
@@ -149,7 +154,13 @@ function BrowserPhone() {
     // ── Step 2: probe WebSocket before handing off to JsSIP ──
     // If Asterisk is down, JsSIP retries forever and floods the console.
     // We test the connection ourselves first and abort if it fails.
-    const wsUrl = `ws://${SIP_HOST}:8088/ws`
+    // Over HTTPS the page is a secure context (mic works) and MUST use a
+    // secure WebSocket. We route wss through the same origin (the reverse
+    // proxy forwards /ws to Asterisk's ws on 8088). Over plain HTTP (localhost
+    // dev) we hit Asterisk's ws port directly.
+    const wsUrl = window.location.protocol === 'https:'
+      ? `wss://${window.location.host}/ws`
+      : `ws://${SIP_HOST}:8088/ws`
 
     setRegState('connecting')
     setStatusMsg('Checking SIP server...')
@@ -163,17 +174,22 @@ function BrowserPhone() {
       password:                       SIP_PASS,
       register:                       true,
       register_expires:               300,
-      connection_recovery_min_interval: 99999,
-      connection_recovery_max_interval: 99999,
+      // Auto-reconnect if the WebSocket blips, so the phone stays registered
+      // and reachable for inbound calls (a dropped ws used to leave a dead
+      // contact → inbound Dial failed with cause 44 / no ring).
+      connection_recovery_min_interval: 2,
+      connection_recovery_max_interval: 30,
     })
 
     ua.on('registered',          () => { wsRetries.current = 0; setRegState('registered'); setStatusMsg('') })
     ua.on('unregistered',        () => { setRegState('idle');       setStatusMsg('Disconnected') })
     ua.on('registrationFailed',  e  => { setRegState('idle');       setStatusMsg('Registration failed: ' + e.cause) })
     ua.on('disconnected', () => {
-      ua.stop()
-      setRegState('idle')
-      setStatusMsg('Disconnected from Asterisk — check it is running on port 8088')
+      // Do NOT ua.stop() — that kills the UA permanently and leaves a stale
+      // registration on Asterisk (inbound calls then fail with cause 44).
+      // Let JsSIP's connection-recovery reconnect the WebSocket on its own.
+      setRegState('connecting')
+      setStatusMsg('Reconnecting to Asterisk…')
     })
 
     ua.on('newRTCSession', ({ session }) => {
@@ -470,7 +486,7 @@ function BrowserPhone() {
       callOptions.mediaStream = localStreamRef.current
     } else {
       // Fallback: let JsSIP call getUserMedia (may fail silently on some browsers)
-      callOptions.mediaConstraints = { audio: true, video: false }
+      callOptions.mediaConstraints = { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false }
     }
     // Stamp the call with the customer id so the dialplan can attribute CDR.
     if (customerId) {
@@ -512,7 +528,7 @@ function BrowserPhone() {
       },
     }
     if (localStreamRef.current) answerOptions.mediaStream = localStreamRef.current
-    else answerOptions.mediaConstraints = { audio: true, video: false }
+    else answerOptions.mediaConstraints = { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false }
 
     try { session.answer(answerOptions) } catch (e) { console.warn('[SIP] answer failed:', e) }
     // ICE gathering happens now (during answer). Arm a 1 s safety fast-forward
@@ -611,7 +627,7 @@ function BrowserPhone() {
     'Not connected'
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-8">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 md:p-6 mb-8">
 
       {/* Mic security warning */}
       {micBlocked && (
@@ -635,7 +651,7 @@ function BrowserPhone() {
       )}
 
       {/* Header */}
-      <div className="flex items-center justify-between mb-5">
+      <div className="flex items-center justify-between gap-3 flex-wrap mb-5">
         <div>
           <h2 className="text-lg font-bold text-white flex items-center gap-2">
             <span className="text-blue-400">&#9742;</span> Browser Phone
@@ -667,7 +683,7 @@ function BrowserPhone() {
 
       {/* Incoming call — Answer / Reject prompt */}
       {isIncoming && (
-        <div className="mb-4 p-4 bg-green-900/30 border border-green-600 rounded-lg flex items-center justify-between gap-4">
+        <div className="mb-4 p-4 bg-green-900/30 border border-green-600 rounded-lg flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div className="flex items-center gap-3">
             <span className="text-green-400 text-2xl leading-none animate-pulse">&#9742;</span>
             <div>
@@ -690,9 +706,9 @@ function BrowserPhone() {
 
       {/* Dial pad — shown once registered (hidden while a call is ringing in) */}
       {regState === 'registered' && !isIncoming && (
-        <div className="flex gap-3">
+        <div className="flex flex-wrap gap-3">
           <input
-            className="flex-1 px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white font-mono text-base focus:outline-none focus:border-blue-500 tracking-widest"
+            className="flex-1 min-w-[180px] px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white font-mono text-base focus:outline-none focus:border-blue-500 tracking-widest"
             placeholder="Enter number e.g. 9142436879"
             value={dialNum}
             onChange={e => setDialNum(e.target.value)}
@@ -860,51 +876,6 @@ export default function Calls() {
   return (
     <div className="max-w-7xl">
 
-      {/* ── Make a Call (SIP, no cellular) ── */}
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-6">
-        <h2 className="text-xl font-bold text-white mb-1 flex items-center gap-2">
-          📞 Make a Call
-          <span className="text-xs font-normal text-gray-500 ml-1">SIP via browser</span>
-        </h2>
-        <p className="text-gray-400 text-sm mb-5">
-          Dials the destination directly over SIP. <strong className="text-white">Audio plays in this browser</strong> — your mobile phone is not involved.
-        </p>
-
-        <form onSubmit={makeC2cCall} className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="text-xs text-gray-400 block mb-1.5">Destination Number</label>
-            <input
-              className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white font-mono text-sm focus:outline-none focus:border-blue-500"
-              placeholder="9142436879"
-              value={c2cForm.to}
-              onChange={e => setC2cForm({...c2cForm, to: e.target.value})}
-              required
-            />
-          </div>
-          <div className="flex items-end">
-            <button type="submit" disabled={c2cCalling}
-              className="w-full bg-green-600 hover:bg-green-500 disabled:opacity-50 text-white px-6 py-3 rounded-lg font-bold text-sm transition flex items-center justify-center gap-2">
-              {c2cCalling ? '⏳ Connecting...' : '📞 Call Now'}
-            </button>
-          </div>
-        </form>
-
-        {c2cResult && (
-          <div className="mt-4 p-3 bg-green-900/30 border border-green-700 rounded-lg flex items-start gap-2">
-            <span className="text-green-400 mt-0.5">✓</span>
-            <div>
-              <p className="text-green-400 text-sm font-medium">{c2cResult.message}</p>
-              <p className="text-green-500 text-xs mt-0.5">Watch the Browser Phone panel below for call status.</p>
-            </div>
-          </div>
-        )}
-        {c2cError && (
-          <div className="mt-4 p-3 bg-red-900/30 border border-red-700 rounded-lg">
-            <p className="text-red-400 text-sm">✗ {c2cError}</p>
-          </div>
-        )}
-      </div>
-
       {/* ── Browser Phone ── */}
       <BrowserPhone />
 
@@ -1007,7 +978,9 @@ export default function Calls() {
         {loading && (
           <div className="h-0.5 bg-blue-600 animate-pulse" />
         )}
-        <table className="w-full text-sm">
+        {/* Horizontal scroll on small screens so the wide table doesn't break layout */}
+        <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[760px]">
           <thead className="border-b border-gray-800 bg-gray-950/50">
             <tr className="text-gray-400 text-xs uppercase tracking-wide">
               {['Direction','From','To','Date & Time','Duration','Billable','Status','Cost','Provider'].map(h => (
@@ -1051,6 +1024,7 @@ export default function Calls() {
             ))}
           </tbody>
         </table>
+        </div>
 
         {!loading && !cdrs.length && (
           <div className="p-10 text-center">

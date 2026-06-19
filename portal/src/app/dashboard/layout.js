@@ -11,7 +11,9 @@ export default function DashboardLayout({ children }) {
   return (
     <div className="flex min-h-screen">
       <Sidebar />
-      <main className="flex-1 p-8 overflow-auto">{children}</main>
+      {/* pt-20 on mobile clears the fixed hamburger top bar; min-w-0 lets
+          child tables/grids shrink instead of overflowing the viewport. */}
+      <main className="flex-1 w-full min-w-0 p-4 pt-20 md:p-8 overflow-auto">{children}</main>
     </div>
   )
 }
